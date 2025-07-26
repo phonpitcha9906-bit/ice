@@ -140,39 +140,18 @@ function loss = crossValObjectiveEnsemble(X, y, params, featureNames)
             'OOBPrediction', 'on', ...
             'PredictorNames', featureNames);
         
-        % Use Out-of-Bag (OOB) error as validation metric
-        oobError = oobError(mdl);
-        loss = oobError(end);  % Take the final OOB error
-        
-        % If OOB error is not available, use cross-validation
-        if isnan(loss) || loss <= 0
-            % Perform 5-fold cross-validation manually
-            cv = cvpartition(length(y), 'KFold', 5);
-            mse_scores = zeros(cv.NumTestSets, 1);
-            
-            for fold = 1:cv.NumTestSets
-                trainIdx = cv.training(fold);
-                testIdx = cv.test(fold);
-                
-                X_train_fold = X(trainIdx, :);
-                y_train_fold = y(trainIdx);
-                X_val_fold = X(testIdx, :);
-                y_val_fold = y(testIdx);
-                
-                % Train model on fold
-                mdl_fold = TreeBagger(params.NumTrees, X_train_fold, y_train_fold, ...
-                    'Method', 'regression', ...
-                    'MinLeafSize', params.MinLeafSize, ...
-                    'MaxNumSplits', params.MaxNumSplits, ...
-                    'NumPredictorsToSample', params.NumPredictorsToSample, ...
-                    'PredictorNames', featureNames);
-                
-                % Predict on validation set
-                y_pred_fold = predict(mdl_fold, X_val_fold);
-                mse_scores(fold) = mean((y_val_fold - y_pred_fold).^2);
+        % Try to use Out-of-Bag (OOB) error as validation metric
+        try
+            oobPredictions = oobPredict(mdl);
+            if ~isempty(oobPredictions) && ~any(isnan(oobPredictions))
+                loss = mean((y - oobPredictions).^2);
+            else
+                % Use cross-validation if OOB is not available
+                loss = performCrossValidation(X, y, params, featureNames);
             end
-            
-            loss = mean(mse_scores);
+        catch
+            % Use cross-validation if OOB fails
+            loss = performCrossValidation(X, y, params, featureNames);
         end
         
     catch ME
@@ -180,6 +159,37 @@ function loss = crossValObjectiveEnsemble(X, y, params, featureNames)
         loss = 1e6;
         fprintf('   Warning: Error in objective function: %s\n', ME.message);
     end
+end
+
+% Helper function to perform cross-validation
+function loss = performCrossValidation(X, y, params, featureNames)
+    % Perform 5-fold cross-validation manually
+    cv = cvpartition(length(y), 'KFold', 5);
+    mse_scores = zeros(cv.NumTestSets, 1);
+    
+    for fold = 1:cv.NumTestSets
+        trainIdx = cv.training(fold);
+        testIdx = cv.test(fold);
+        
+        X_train_fold = X(trainIdx, :);
+        y_train_fold = y(trainIdx);
+        X_val_fold = X(testIdx, :);
+        y_val_fold = y(testIdx);
+        
+        % Train model on fold
+        mdl_fold = TreeBagger(params.NumTrees, X_train_fold, y_train_fold, ...
+            'Method', 'regression', ...
+            'MinLeafSize', params.MinLeafSize, ...
+            'MaxNumSplits', params.MaxNumSplits, ...
+            'NumPredictorsToSample', params.NumPredictorsToSample, ...
+            'PredictorNames', featureNames);
+        
+        % Predict on validation set
+        y_pred_fold = predict(mdl_fold, X_val_fold);
+        mse_scores(fold) = mean((y_val_fold - y_pred_fold).^2);
+    end
+    
+    loss = mean(mse_scores);
 end
 
 % --- 4. Hyperparameter Tuning for Each Target Variable ---
@@ -223,15 +233,20 @@ function [model, importance] = trainFinalEnsembleModel(X, y, params, featureName
         'OOBPredictorImportance', 'on', ...
         'PredictorNames', featureNames);
     
-    % Get feature importance from TreeBagger
-    importance = model.OOBPermutedPredictorDeltaError;
-    
-    % Normalize importance scores to percentages
-    if ~isempty(importance) && sum(importance) > 0
-        importance = max(0, importance);  % Ensure non-negative
-        importance = importance / sum(importance) * 100;
-    else
-        % If OOB importance is not available, calculate manually
+    % Try to get feature importance from TreeBagger
+    try
+        importance = model.OOBPermutedPredictorDeltaError;
+        
+        % Check if importance is valid
+        if ~isempty(importance) && length(importance) == length(featureNames) && sum(importance) > 0
+            importance = max(0, importance);  % Ensure non-negative
+            importance = importance / sum(importance) * 100;
+        else
+            % If OOB importance is not available, calculate manually
+            importance = calculatePermutationImportance(model, X, y, featureNames);
+        end
+    catch
+        % If OOB importance fails, calculate manually
         importance = calculatePermutationImportance(model, X, y, featureNames);
     end
     
@@ -246,24 +261,33 @@ end
 
 % Helper function to calculate permutation importance manually
 function importance = calculatePermutationImportance(model, X, y, featureNames)
-    % Get baseline predictions
-    baseline_predictions = predict(model, X);
-    baseline_mse = mean((y - baseline_predictions).^2);
-    
-    % Calculate importance by permuting each feature
-    importance = zeros(1, length(featureNames));
-    for i = 1:length(featureNames)
-        X_permuted = X;
-        X_permuted(:, i) = X_permuted(randperm(size(X, 1)), i);
-        permuted_predictions = predict(model, X_permuted);
-        permuted_mse = mean((y - permuted_predictions).^2);
-        importance(i) = permuted_mse - baseline_mse;
-    end
-    
-    % Normalize importance scores
-    importance = max(0, importance);
-    if sum(importance) > 0
-        importance = importance / sum(importance) * 100;
+    try
+        % Get baseline predictions
+        baseline_predictions = predict(model, X);
+        baseline_mse = mean((y - baseline_predictions).^2);
+        
+        % Calculate importance by permuting each feature
+        importance = zeros(1, length(featureNames));
+        for i = 1:length(featureNames)
+            X_permuted = X;
+            X_permuted(:, i) = X_permuted(randperm(size(X, 1)), i);
+            permuted_predictions = predict(model, X_permuted);
+            permuted_mse = mean((y - permuted_predictions).^2);
+            importance(i) = max(0, permuted_mse - baseline_mse);
+        end
+        
+        % Normalize importance scores
+        if sum(importance) > 0
+            importance = importance / sum(importance) * 100;
+        else
+            % If all importance scores are zero, assign equal importance
+            importance = ones(1, length(featureNames)) * (100 / length(featureNames));
+        end
+        
+    catch ME
+        fprintf('   Warning: Could not calculate permutation importance: %s\n', ME.message);
+        % Assign equal importance if calculation fails
+        importance = ones(1, length(featureNames)) * (100 / length(featureNames));
     end
 end
 
@@ -288,12 +312,16 @@ function evaluateEnsembleModel(model, X, y, targetName)
     fprintf('     R²:   %.4f\n', r_squared);
     
     % Additional ensemble-specific metrics
-    if isprop(model, 'OOBIndices') && ~isempty(model.OOBIndices)
+    try
         oob_predictions = oobPredict(model);
-        if ~isempty(oob_predictions)
+        if ~isempty(oob_predictions) && ~any(isnan(oob_predictions))
             oob_rmse = sqrt(mean((y - oob_predictions).^2));
+            oob_r2 = 1 - sum((y - oob_predictions).^2) / sum((y - mean(y)).^2);
             fprintf('     OOB RMSE: %.4f\n', oob_rmse);
+            fprintf('     OOB R²:   %.4f\n', oob_r2);
         end
+    catch
+        % OOB prediction not available
     end
     fprintf('\n');
 end
