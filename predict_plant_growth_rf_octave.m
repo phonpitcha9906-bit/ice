@@ -58,26 +58,48 @@ catch
     train_processed = [];
     for i = 2:length(train_text)  % Skip header
         parts = strsplit(train_text{i}, ',');
-        row_data = [];
-        for j = 2:length(parts)  % Skip PlantType column
-            if j <= 5  % Feature columns (need conversion)
-                row_data(end+1) = convertRangeToMidpoint(parts{j});
-            else  % Target columns (already numeric)
-                row_data(end+1) = str2double(parts{j});
-            end
+        if length(parts) < 8  % Check if we have enough columns
+            fprintf('   ⚠ Warning: Row %d has only %d columns, skipping...\n', i, length(parts));
+            continue;
         end
-        train_processed = [train_processed; row_data];
+        row_data = [];
+        % Process feature columns (2-5: Moisture, Humidity, LightIntensity, CO2Concentration)
+        for j = 2:5
+            row_data(end+1) = convertRangeToMidpoint(parts{j});
+        end
+        % Process target columns (6-8: StemHeight, LeafCount, FlowerCount)
+        for j = 6:8
+            row_data(end+1) = str2double(parts{j});
+        end
+        
+        % Only add if we have exactly 7 values (4 features + 3 targets)
+        if length(row_data) == 7
+            train_processed = [train_processed; row_data];
+        else
+            fprintf('   ⚠ Warning: Row %d processed to %d values instead of 7, skipping...\n', i, length(row_data));
+        end
     end
     
     % Process test data
     test_processed = [];
     for i = 2:length(test_text)  % Skip header
         parts = strsplit(test_text{i}, ',');
+        if length(parts) < 5  % Check if we have enough columns
+            fprintf('   ⚠ Warning: Test row %d has only %d columns, skipping...\n', i, length(parts));
+            continue;
+        end
         row_data = [];
-        for j = 2:5  % Only feature columns
+        % Process feature columns (2-5: Moisture, Humidity, LightIntensity, CO2Concentration)
+        for j = 2:5
             row_data(end+1) = convertRangeToMidpoint(parts{j});
         end
-        test_processed = [test_processed; row_data];
+        
+        % Only add if we have exactly 4 values (4 features)
+        if length(row_data) == 4
+            test_processed = [test_processed; row_data];
+        else
+            fprintf('   ⚠ Warning: Test row %d processed to %d values instead of 4, skipping...\n', i, length(row_data));
+        end
     end
     
     train_data = train_processed;
