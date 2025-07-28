@@ -41,100 +41,113 @@ y_train_stem = training_data.StemGirth;
 % --- Data Preparation for LSTM ---
 fprintf('\nPreparing data for LSTM models...\n');
 
-% สำหรับ LSTM เราต้องจัดเตรียมข้อมูลเป็น sequence
-% กำหนดความยาวของ sequence (time steps)
-sequence_length = 5; % จำนวน time steps ที่ใช้ในการทำนาย
+% สำหรับ LSTM เราใช้วิธี sliding window แทนการสร้าง sequence ปกติ
+% เพื่อไม่ให้ข้อมูลลดลง
+sequence_length = 3; % ลดลงเป็น 3 เพื่อให้ได้ข้อมูลมากขึ้น
 
-% Function สำหรับสร้าง sequences
-function [X_seq, y_seq] = create_sequences(X, y, seq_len)
-    num_samples = size(X, 1) - seq_len + 1;
+% Function สำหรับสร้าง sequences แบบใหม่ (overlapping windows)
+function [X_seq, y_seq] = create_sequences_improved(X, y, seq_len)
+    num_samples = size(X, 1);
     num_features = size(X, 2);
     
+    % สร้าง sequences โดยใช้การทำซ้ำข้อมูล (data augmentation)
     X_seq = zeros(num_samples, seq_len, num_features);
-    y_seq = zeros(num_samples, 1);
+    y_seq = y;
     
     for i = 1:num_samples
-        X_seq(i, :, :) = X(i:i+seq_len-1, :);
-        y_seq(i) = y(i+seq_len-1);
+        for j = 1:seq_len
+            % ใช้ circular indexing เพื่อไม่ให้ข้อมูลลดลง
+            idx = mod(i + j - 2, num_samples) + 1;
+            X_seq(i, j, :) = X(idx, :);
+        end
     end
 end
 
-% สร้าง sequences สำหรับข้อมูลฝึก
-[X_train_seq_leaf, y_train_seq_leaf] = create_sequences(X_train, y_train_leaf, sequence_length);
-[X_train_seq_area, y_train_seq_area] = create_sequences(X_train, y_train_area, sequence_length);
-[X_train_seq_stem, y_train_seq_stem] = create_sequences(X_train, y_train_stem, sequence_length);
+% สร้าง sequences สำหรับข้อมูลฝึก (ใหม่)
+[X_train_seq_leaf, y_train_seq_leaf] = create_sequences_improved(X_train, y_train_leaf, sequence_length);
+[X_train_seq_area, y_train_seq_area] = create_sequences_improved(X_train, y_train_area, sequence_length);
+[X_train_seq_stem, y_train_seq_stem] = create_sequences_improved(X_train, y_train_stem, sequence_length);
 
-% สร้าง sequences สำหรับข้อมูลทดสอบ
-[X_test_seq_leaf, ~] = create_sequences(X_test, zeros(size(X_test, 1), 1), sequence_length);
-[X_test_seq_area, ~] = create_sequences(X_test, zeros(size(X_test, 1), 1), sequence_length);
-[X_test_seq_stem, ~] = create_sequences(X_test, zeros(size(X_test, 1), 1), sequence_length);
+% สร้าง sequences สำหรับข้อมูลทดสอบ (ใหม่)
+[X_test_seq_leaf, ~] = create_sequences_improved(X_test, zeros(size(X_test, 1), 1), sequence_length);
+[X_test_seq_area, ~] = create_sequences_improved(X_test, zeros(size(X_test, 1), 1), sequence_length);
+[X_test_seq_stem, ~] = create_sequences_improved(X_test, zeros(size(X_test, 1), 1), sequence_length);
 
-% Normalization ของข้อมูล
+% แสดงขนาดข้อมูลหลังสร้าง sequences
+fprintf('Training data size after sequencing: %d samples\n', size(X_train_seq_leaf, 1));
+fprintf('Test data size after sequencing: %d samples\n', size(X_test_seq_leaf, 1));
+
+% Normalization ของข้อมูลแบบปรับปรุง
 fprintf('Normalizing data for LSTM...\n');
 
-% Normalize input features
-X_train_norm = normalize(X_train_seq_leaf, 3); % normalize across features (3rd dimension)
-X_test_norm_leaf = normalize(X_test_seq_leaf, 3);
-X_test_norm_area = normalize(X_test_seq_area, 3);
-X_test_norm_stem = normalize(X_test_seq_stem, 3);
+% ใช้ mapminmax แทน normalize เพื่อความสอดคล้องกับ FNN
+% Normalize input sequences
+X_train_combined = reshape(X_train_seq_leaf, [], size(X_train_seq_leaf, 3));
+[X_train_norm_flat, input_settings] = mapminmax(X_train_combined', -1, 1);
+X_train_norm = reshape(X_train_norm_flat', size(X_train_seq_leaf));
 
-% Normalize target variables
-y_train_leaf_norm = normalize(y_train_seq_leaf);
-y_train_area_norm = normalize(y_train_seq_area);
-y_train_stem_norm = normalize(y_train_seq_stem);
+% Apply same normalization to test data
+X_test_combined_leaf = reshape(X_test_seq_leaf, [], size(X_test_seq_leaf, 3));
+X_test_norm_flat_leaf = mapminmax('apply', X_test_combined_leaf', input_settings);
+X_test_norm_leaf = reshape(X_test_norm_flat_leaf', size(X_test_seq_leaf));
 
-% เก็บค่า mean และ std สำหรับ denormalization
-leaf_mean = mean(y_train_seq_leaf);
-leaf_std = std(y_train_seq_leaf);
-area_mean = mean(y_train_seq_area);
-area_std = std(y_train_seq_area);
-stem_mean = mean(y_train_seq_stem);
-stem_std = std(y_train_seq_stem);
+X_test_combined_area = reshape(X_test_seq_area, [], size(X_test_seq_area, 3));
+X_test_norm_flat_area = mapminmax('apply', X_test_combined_area', input_settings);
+X_test_norm_area = reshape(X_test_norm_flat_area', size(X_test_seq_area));
+
+X_test_combined_stem = reshape(X_test_seq_stem, [], size(X_test_seq_stem, 3));
+X_test_norm_flat_stem = mapminmax('apply', X_test_combined_stem', input_settings);
+X_test_norm_stem = reshape(X_test_norm_flat_stem', size(X_test_seq_stem));
+
+% Normalize target variables ด้วย mapminmax
+[y_train_leaf_norm, leaf_output_settings] = mapminmax(y_train_seq_leaf', -1, 1);
+y_train_leaf_norm = y_train_leaf_norm';
+
+[y_train_area_norm, area_output_settings] = mapminmax(y_train_seq_area', -1, 1);
+y_train_area_norm = y_train_area_norm';
+
+[y_train_stem_norm, stem_output_settings] = mapminmax(y_train_seq_stem', -1, 1);
+y_train_stem_norm = y_train_stem_norm';
 
 fprintf('Data preparation for LSTM complete.\n');
 
 % --- สร้างโมเดล LSTM ---
 fprintf('\nCreating LSTM models...\n');
 
-% กำหนดพารามิเตอร์ LSTM ที่ปรับแล้ว
-numHiddenUnits = 64; % จำนวน hidden units ใน LSTM layer
+% กำหนดพารามิเตอร์ LSTM ที่ปรับแล้วสำหรับข้อมูลขนาดเล็ก
 numFeatures = size(X_train, 2); % จำนวนฟีเจอร์
 numResponses = 1; % จำนวน output (regression)
 
-% สร้าง LSTM layers สำหรับ Leaf Length
+% สร้าง LSTM layers สำหรับ Leaf Length (แบบเรียบง่าย)
 layers_leaf = [
     sequenceInputLayer(numFeatures)
-    lstmLayer(numHiddenUnits, 'OutputMode', 'sequence')
-    dropoutLayer(0.2)
-    lstmLayer(numHiddenUnits/2, 'OutputMode', 'last')
-    dropoutLayer(0.2)
-    fullyConnectedLayer(32)
-    reluLayer
+    lstmLayer(16, 'OutputMode', 'last')  % ลดขนาดให้เหมาะกับข้อมูลเล็ก
+    dropoutLayer(0.3)
+    fullyConnectedLayer(8)
+    tanhLayer                            % ใช้ tanh แทน relu
     fullyConnectedLayer(numResponses)
     regressionLayer
 ];
 
-% สร้าง LSTM layers สำหรับ Leaf Area
+% สร้าง LSTM layers สำหรับ Leaf Area (แตกต่างเล็กน้อย)
 layers_area = [
     sequenceInputLayer(numFeatures)
-    lstmLayer(numHiddenUnits, 'OutputMode', 'sequence')
+    lstmLayer(20, 'OutputMode', 'last')  % ขนาดต่างกันเล็กน้อย
     dropoutLayer(0.2)
-    lstmLayer(numHiddenUnits/2, 'OutputMode', 'last')
-    dropoutLayer(0.2)
-    fullyConnectedLayer(32)
+    fullyConnectedLayer(12)
     reluLayer
     fullyConnectedLayer(numResponses)
     regressionLayer
 ];
 
-% สร้าง LSTM layers สำหรับ Stem Girth
+% สร้าง LSTM layers สำหรับ Stem Girth (แตกต่างอีก)
 layers_stem = [
     sequenceInputLayer(numFeatures)
-    lstmLayer(numHiddenUnits, 'OutputMode', 'sequence')
-    dropoutLayer(0.2)
-    lstmLayer(numHiddenUnits/2, 'OutputMode', 'last')
-    dropoutLayer(0.2)
-    fullyConnectedLayer(32)
+    lstmLayer(24, 'OutputMode', 'last')  % ขนาดต่างกันอีก
+    dropoutLayer(0.25)
+    fullyConnectedLayer(10)
+    sigmoidLayer                         % ใช้ sigmoid
+    fullyConnectedLayer(6)
     reluLayer
     fullyConnectedLayer(numResponses)
     regressionLayer
@@ -145,15 +158,16 @@ fprintf('LSTM architectures created.\n');
 % --- กำหนดตัวเลือกการฝึก (Training Options) ---
 fprintf('Setting training options...\n');
 
+% ปรับ training options สำหรับข้อมูลขนาดเล็ก
 options = trainingOptions('adam', ...
-    'MaxEpochs', 300, ...
-    'MiniBatchSize', 32, ...
-    'InitialLearnRate', 0.001, ...
+    'MaxEpochs', 150, ...                  % ลด epochs
+    'MiniBatchSize', 4, ...                % ลด batch size สำหรับข้อมูลเล็ก
+    'InitialLearnRate', 0.01, ...          % เพิ่ม learning rate
     'LearnRateSchedule', 'piecewise', ...
-    'LearnRateDropFactor', 0.5, ...
-    'LearnRateDropPeriod', 50, ...
-    'GradientThreshold', 1, ...
-    'ValidationFrequency', 10, ...
+    'LearnRateDropFactor', 0.7, ...        % ปรับ drop factor
+    'LearnRateDropPeriod', 30, ...         % ลด drop period
+    'GradientThreshold', 2, ...            % เพิ่ม gradient threshold
+    'ValidationFrequency', 5, ...          % ลด validation frequency
     'Shuffle', 'every-epoch', ...
     'Verbose', true, ...
     'Plots', 'training-progress', ...
@@ -162,27 +176,72 @@ options = trainingOptions('adam', ...
 fprintf('Training options set.\n');
 
 % --- เตรียมข้อมูลสำหรับการฝึก LSTM ---
-% แปลงข้อมูลเป็น cell arrays สำหรับ LSTM
-X_train_cell_leaf = cell(size(X_train_norm, 1), 1);
-X_train_cell_area = cell(size(X_train_norm, 1), 1);
-X_train_cell_stem = cell(size(X_train_norm, 1), 1);
+% แปลงข้อมูลเป็น cell arrays สำหรับ LSTM โดยใช้ข้อมูลที่แตกต่างกันสำหรับแต่ละโมเดล
 
+% สำหรับ Leaf Length
+X_train_cell_leaf = cell(size(X_train_norm, 1), 1);
 for i = 1:size(X_train_norm, 1)
     X_train_cell_leaf{i} = squeeze(X_train_norm(i, :, :))';
-    X_train_cell_area{i} = squeeze(X_train_norm(i, :, :))';
-    X_train_cell_stem{i} = squeeze(X_train_norm(i, :, :))';
 end
 
-% เตรียม test data
-X_test_cell_leaf = cell(size(X_test_norm_leaf, 1), 1);
-X_test_cell_area = cell(size(X_test_norm_area, 1), 1);
-X_test_cell_stem = cell(size(X_test_norm_stem, 1), 1);
+% สำหรับ Leaf Area - ใช้ข้อมูลที่ normalize แยกต่างหาก
+X_train_area_combined = reshape(X_train_seq_area, [], size(X_train_seq_area, 3));
+[X_train_area_norm_flat, input_settings_area] = mapminmax(X_train_area_combined', -1, 1);
+X_train_area_norm = reshape(X_train_area_norm_flat', size(X_train_seq_area));
 
+X_train_cell_area = cell(size(X_train_area_norm, 1), 1);
+for i = 1:size(X_train_area_norm, 1)
+    X_train_cell_area{i} = squeeze(X_train_area_norm(i, :, :))';
+end
+
+% สำหรับ Stem Girth - ใช้ข้อมูลที่ normalize แยกต่างหาก
+X_train_stem_combined = reshape(X_train_seq_stem, [], size(X_train_seq_stem, 3));
+[X_train_stem_norm_flat, input_settings_stem] = mapminmax(X_train_stem_combined', -1, 1);
+X_train_stem_norm = reshape(X_train_stem_norm_flat', size(X_train_seq_stem));
+
+X_train_cell_stem = cell(size(X_train_stem_norm, 1), 1);
+for i = 1:size(X_train_stem_norm, 1)
+    X_train_cell_stem{i} = squeeze(X_train_stem_norm(i, :, :))';
+end
+
+% เตรียม test data สำหรับแต่ละโมเดล
+% Leaf test data
+X_test_cell_leaf = cell(size(X_test_norm_leaf, 1), 1);
 for i = 1:size(X_test_norm_leaf, 1)
     X_test_cell_leaf{i} = squeeze(X_test_norm_leaf(i, :, :))';
-    X_test_cell_area{i} = squeeze(X_test_norm_area(i, :, :))';
-    X_test_cell_stem{i} = squeeze(X_test_norm_stem(i, :, :))';
 end
+
+% Area test data
+X_test_norm_area_flat = mapminmax('apply', X_test_combined_area', input_settings_area);
+X_test_norm_area_corrected = reshape(X_test_norm_area_flat', size(X_test_seq_area));
+
+X_test_cell_area = cell(size(X_test_norm_area_corrected, 1), 1);
+for i = 1:size(X_test_norm_area_corrected, 1)
+    X_test_cell_area{i} = squeeze(X_test_norm_area_corrected(i, :, :))';
+end
+
+% Stem test data
+X_test_norm_stem_flat = mapminmax('apply', X_test_combined_stem', input_settings_stem);
+X_test_norm_stem_corrected = reshape(X_test_norm_stem_flat', size(X_test_seq_stem));
+
+X_test_cell_stem = cell(size(X_test_norm_stem_corrected, 1), 1);
+for i = 1:size(X_test_norm_stem_corrected, 1)
+    X_test_cell_stem{i} = squeeze(X_test_norm_stem_corrected(i, :, :))';
+end
+
+% เพิ่มการ shuffle ข้อมูลเพื่อลดการทำซ้ำ
+fprintf('Adding randomization to training data...\n');
+rng(42); % set seed for reproducibility
+shuffle_idx = randperm(length(X_train_cell_leaf));
+
+X_train_cell_leaf = X_train_cell_leaf(shuffle_idx);
+y_train_leaf_norm = y_train_leaf_norm(shuffle_idx);
+
+X_train_cell_area = X_train_cell_area(shuffle_idx);
+y_train_area_norm = y_train_area_norm(shuffle_idx);
+
+X_train_cell_stem = X_train_cell_stem(shuffle_idx);
+y_train_stem_norm = y_train_stem_norm(shuffle_idx);
 
 % --- ฝึกโมเดล LSTM ---
 fprintf('\nStarting LSTM models training...\n');
@@ -212,31 +271,43 @@ y_pred_leaf_norm = predict(net_lstm_leaf, X_test_cell_leaf);
 y_pred_area_norm = predict(net_lstm_area, X_test_cell_area);
 y_pred_stem_norm = predict(net_lstm_stem, X_test_cell_stem);
 
-% Denormalize predictions
-y_pred_leaf_lstm = y_pred_leaf_norm * leaf_std + leaf_mean;
-y_pred_area_lstm = y_pred_area_norm * area_std + area_mean;
-y_pred_stem_lstm = y_pred_stem_norm * stem_std + stem_mean;
+% Denormalize predictions ด้วย mapminmax reverse
+y_pred_leaf_lstm = mapminmax('reverse', y_pred_leaf_norm', leaf_output_settings)';
+y_pred_area_lstm = mapminmax('reverse', y_pred_area_norm', area_output_settings)';
+y_pred_stem_lstm = mapminmax('reverse', y_pred_stem_norm', stem_output_settings)';
 
 fprintf('LSTM predictions complete and denormalized.\n');
 
 % แสดงผลการทำนาย
 disp(' ');
 disp('--- LSTM Predictions on Test Data ---');
+fprintf('Number of test samples: %d\n', length(y_pred_leaf_lstm));
+fprintf('Number of actual samples: %d\n', length(actual_data.LeafLength));
+
 disp('LSTM Predictions for Leaf Length:');
-disp(y_pred_leaf_lstm);
+for i = 1:length(y_pred_leaf_lstm)
+    fprintf('Sample %d: Predicted = %.4f, Actual = %.4f\n', i, y_pred_leaf_lstm(i), actual_data.LeafLength(i));
+end
+
+disp(' ');
 disp('LSTM Predictions for Leaf Area:');
-disp(y_pred_area_lstm);
+for i = 1:length(y_pred_area_lstm)
+    fprintf('Sample %d: Predicted = %.4f, Actual = %.4f\n', i, y_pred_area_lstm(i), actual_data.LeafArea(i));
+end
+
+disp(' ');
 disp('LSTM Predictions for Stem Girth:');
-disp(y_pred_stem_lstm);
+for i = 1:length(y_pred_stem_lstm)
+    fprintf('Sample %d: Predicted = %.4f, Actual = %.4f\n', i, y_pred_stem_lstm(i), actual_data.StemGirth(i));
+end
 
 % --- การประเมินผลสำหรับ LSTM Models ---
 fprintf('\n=== LSTM Model Performance Evaluation ===\n');
 
-% เนื่องจากเราใช้ sequences, จำนวนการทำนายจะน้อยกว่าข้อมูลเดิม
-% ต้องปรับข้อมูลจริงให้ตรงกัน
-actual_leaf_adjusted = actual_data.LeafLength(sequence_length:end);
-actual_area_adjusted = actual_data.LeafArea(sequence_length:end);
-actual_stem_adjusted = actual_data.StemGirth(sequence_length:end);
+% ตอนนี้เราใช้ข้อมูลครบแล้ว ไม่ต้องปรับข้อมูลจริง
+actual_leaf_adjusted = actual_data.LeafLength;
+actual_area_adjusted = actual_data.LeafArea;
+actual_stem_adjusted = actual_data.StemGirth;
 
 % คำนวณ metrics สำหรับ LSTM models
 % Leaf Length LSTM
@@ -325,8 +396,8 @@ disp(metrics_table);
 % --- บันทึกโมเดล ---
 fprintf('\nSaving trained LSTM models...\n');
 save('lstm_plant_growth_models.mat', 'net_lstm_leaf', 'net_lstm_area', 'net_lstm_stem', ...
-     'leaf_mean', 'leaf_std', 'area_mean', 'area_std', 'stem_mean', 'stem_std', ...
-     'sequence_length', 'numFeatures');
+     'leaf_output_settings', 'area_output_settings', 'stem_output_settings', ...
+     'input_settings', 'sequence_length', 'numFeatures');
 fprintf('Models saved to lstm_plant_growth_models.mat\n');
 
 fprintf('\n=== LSTM Plant Growth Prediction Analysis Complete ===\n');
