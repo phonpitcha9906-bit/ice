@@ -47,6 +47,8 @@ try
     fprintf('   Test data size: %d rows, %d columns\n', height(T_test), width(T_test));
 catch ME
     fprintf('   ✗ Error loading data files: %s\n', ME.message);
+    fprintf('   Hint: Make sure datatraining.xlsx and datatest.xlsx exist in the current directory.\n');
+    fprintf('   You can run ''create_sample_data'' to generate sample data files.\n');
     return;
 end
 
@@ -73,6 +75,19 @@ fprintf('   ✓ Target variables prepared: %s\n', strjoin(targetVars, ', '));
 
 % --- 3. Define Hyperparameter Grid Search ---
 fprintf('\n4. Setting up Grid Search for hyperparameter tuning...\n');
+
+% Check if TreeBagger is available
+try
+    % Test TreeBagger with minimal parameters
+    test_model = TreeBagger(2, [1, 2; 3, 4], [1; 2], 'Method', 'regression');
+    fprintf('   ✓ TreeBagger (Random Forest) is available\n');
+    clear test_model;
+catch ME
+    fprintf('   ✗ Error: TreeBagger is not available: %s\n', ME.message);
+    fprintf('   TreeBagger requires MATLAB R2011a or later.\n');
+    return;
+end
+
 % Define parameter grids
 minLeafSizes = [1, 5, 10, 15, 20];
 numPredictorsToSample = [1, 2, 3, 4]; % Up to number of features
@@ -82,9 +97,13 @@ function [bestParams, bestError] = gridSearchRandomForest(X, y, minLeafSizes, nu
     fprintf('   Optimizing hyperparameters for %s using Grid Search...\n', targetName);
     
     bestError = inf;
-    bestParams = struct();
+    % Initialize bestParams with default values
+    bestParams = struct('MinLeafSize', minLeafSizes(1), ...
+                       'NumPredictorsToSample', numPredictorsToSample(1), ...
+                       'NumTrees', numTrees(1));
     totalCombinations = length(minLeafSizes) * length(numPredictorsToSample) * length(numTrees);
     currentCombination = 0;
+    validCombinationsFound = 0;
     
     for mls = minLeafSizes
         for npts = numPredictorsToSample
@@ -101,6 +120,7 @@ function [bestParams, bestError] = gridSearchRandomForest(X, y, minLeafSizes, nu
                     
                     % Calculate OOB error
                     oobErr = oobError(model, 'Mode', 'ensemble');
+                    validCombinationsFound = validCombinationsFound + 1;
                     
                     % Update best parameters if this is better
                     if oobErr < bestError
@@ -112,7 +132,7 @@ function [bestParams, bestError] = gridSearchRandomForest(X, y, minLeafSizes, nu
                     
                     % Progress indicator
                     if mod(currentCombination, 10) == 0 || currentCombination == totalCombinations
-                        fprintf('     Progress: %d/%d combinations tested\n', currentCombination, totalCombinations);
+                        fprintf('     Progress: %d/%d combinations tested (%d valid)\n', currentCombination, totalCombinations, validCombinationsFound);
                     end
                     
                 catch ME
@@ -122,9 +142,14 @@ function [bestParams, bestError] = gridSearchRandomForest(X, y, minLeafSizes, nu
         end
     end
     
-    fprintf('     Best parameters found - MinLeafSize: %d, NumPredictorsToSample: %d, NumTrees: %d\n', ...
-        bestParams.MinLeafSize, bestParams.NumPredictorsToSample, bestParams.NumTrees);
-    fprintf('     Best OOB Error: %.4f\n', bestError);
+    if validCombinationsFound == 0
+        fprintf('     Warning: No valid parameter combinations found! Using default parameters.\n');
+        bestError = NaN;
+    else
+        fprintf('     Best parameters found - MinLeafSize: %d, NumPredictorsToSample: %d, NumTrees: %d\n', ...
+            bestParams.MinLeafSize, bestParams.NumPredictorsToSample, bestParams.NumTrees);
+        fprintf('     Best OOB Error: %.4f\n', bestError);
+    end
 end
 
 % --- 4. Hyperparameter Tuning for Each Target Variable ---
