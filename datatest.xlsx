@@ -1,0 +1,6 @@
+PlantType,Moisture,Humidity,LightIntensity,CO2Concentration
+Tomato,64-74%,68-78% RH,23000-33000 lux,430-630 ppm
+Lettuce,71-81%,71-81% RH,16500-26500 lux,385-535 ppm
+Basil,51-61%,61-71% RH,26500-36500 lux,415-715 ppm
+Pepper,56-66%,66-76% RH,30500-40500 lux,510-810 ppm
+Spinach,76-86%,76-86% RH,11500-21500 lux,335-485 ppm
